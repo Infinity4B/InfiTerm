@@ -1,0 +1,5 @@
+[
+  { "id": "code", "name": "代码目录", "cwd": "~/Documents/Code" },
+  { "id": "prod", "name": "生产服务器", "ssh": "deploy@10.0.0.12", "port": 2222 },
+  { "id": "main", "name": "tmux 主会话", "command": ["tmux", "new", "-A", "-s", "main"] }
+]
