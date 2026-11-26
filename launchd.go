@@ -9,7 +9,7 @@ import (
 	"text/template"
 )
 
-const agentLabel = "dev.porthole"
+const agentLabel = "dev.infiterm"
 
 var plistTmpl = template.Must(template.New("plist").Parse(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -34,7 +34,7 @@ var plistTmpl = template.Must(template.New("plist").Parse(`<?xml version="1.0" e
 func agentPaths() (plist, logFile string) {
 	home := homeDir()
 	return filepath.Join(home, "Library", "LaunchAgents", agentLabel+".plist"),
-		filepath.Join(home, "Library", "Logs", "porthole.log")
+		filepath.Join(home, "Library", "Logs", "infiterm.log")
 }
 
 func launchctl(args ...string) error {

@@ -1,4 +1,6 @@
-# Porthole
+# InfiTerm
+
+[![CI](https://github.com/Infinity4B/InfiTerm/actions/workflows/ci.yml/badge.svg)](https://github.com/Infinity4B/InfiTerm/actions/workflows/ci.yml)
 
 本地网页终端：Warp 风格的底部输入框、多标签、一键 SSH，用浏览器书签打开。
 
@@ -7,25 +9,27 @@ Go 写的单个二进制，网页（含 xterm.js）和 zsh 集成脚本都编译
 ## 安装
 
 ```sh
-make install      # 编译到 ~/.local/bin/porthole，注册 launchd：登录后自动启动、崩溃自动重启
+make install      # 编译到 ~/.local/bin/infiterm，注册 launchd：登录后自动启动、崩溃自动重启
 make uninstall    # 注销服务并删除二进制
 ```
 
-改了代码之后再执行一次 `make install`，会用新二进制重启服务。日志在 `~/Library/Logs/porthole.log`。
+也可以直接从 [GitHub Releases](https://github.com/Infinity4B/InfiTerm/releases) 下载对应架构的 macOS 二进制包，解压后运行 `./infiterm install`。
 
-临时手动运行：`make run`（端口默认 7681，`make run PORT=7690` 可改）。
+改了代码之后再执行一次 `make install`，会用新二进制重启服务。日志在 `~/Library/Logs/infiterm.log`。
+
+临时手动运行：`make run`（端口默认 7681，`make run PORT=7690` 或设置 `INFITERM_PORT` 可改）。
 
 ## 代码结构
 
 | 文件 | 内容 |
 |---|---|
-| `main.go` | 入口，`serve` / `install` / `uninstall` 子命令，内嵌资源 |
+| `main.go` | 入口，`serve` / `install` / `uninstall` / `version` 子命令，内嵌资源 |
 | `server.go` | HTTP、静态文件、Host/Origin 校验 |
-| `session.go` | WebSocket ↔ pty 会话 |
+| `session.go` | WebSocket ↔ pty 会话管理、保活与断线重连 |
 | `targets.go` | 目标列表（`~/.ssh/config`、`targets.json`）与启动命令 |
 | `fonts.go` | 扫描本机字体目录，解析字体文件得到族名和是否等宽（`/api/fonts`） |
 | `launchd.go` | launchd 服务注册 |
-| `shell/zsh/` | zsh 集成，启动时写到 `~/Library/Application Support/porthole/shell/zsh` |
+| `shell/zsh/` | zsh 集成，启动时写到 `~/Library/Application Support/infiterm/shell/zsh` |
 | `web/` | 前端；`web/vendor/` 是 @xterm/xterm 6.0.0、addon-fit 0.11.0、addon-web-links 0.12.0、addon-webgl 0.19.0 |
 
 ## 书签
@@ -42,7 +46,7 @@ make uninstall    # 注销服务并删除二进制
 
 - `local`：内置，本地登录 shell
 - `~/.ssh/config` 中所有不含通配符的 `Host`（支持 `Include`）
-- `~/.config/porthole/targets.json`：自定义目标，格式见 `targets.example.json`
+- `~/.config/infiterm/targets.json`：自定义目标，格式见 `targets.example.json`
   - `{"id", "name", "cwd"}`：在指定目录打开本地 shell
   - `{"id", "name", "ssh", "port"}`：SSH 目标
   - `{"id", "name", "command": [...]}`：运行指定命令，例如 tmux 会话
@@ -70,7 +74,7 @@ URL 里只能写目标 id，不能写任意命令。
 
 ## zsh 集成
 
-本地 zsh 会话会自动加载 `shell/zsh/porthole.zsh`（通过 `ZDOTDIR` 注入，你的 `.zshenv`/`.zprofile`/`.zshrc`/`.zlogin` 照常加载，不需要改动）。之后输入框和 zsh 的编辑缓冲区（ZLE）双向同步：
+本地 zsh 会话会自动加载 `shell/zsh/infiterm.zsh`（通过 `ZDOTDIR` 注入，你的 `.zshenv`/`.zprofile`/`.zshrc`/`.zlogin` 照常加载，不需要改动）。之后输入框和 zsh 的编辑缓冲区（ZLE）双向同步：
 
 - 在输入框里打字，终端提示符那一行同步显示，zsh-autosuggestions、语法高亮照常工作
 - `Tab` 由 zsh 自己补全（compinit、你的 zstyle 配置都生效），补全结果回填到输入框；候选列表显示在终端里
@@ -103,4 +107,4 @@ SSH 目标和非 zsh 的 shell 没有这层集成：`Tab` 会把已输入内容�
 
 - 切换后台标签页、网络抖动或浏览器 Memory Saver 回收重载时，服务端会保留会话 10 分钟并缓存最近输出，切回后自动无感重连；超过宽限期或主动关闭标签页面板时会话随之结束（整个进程组先收到 SIGHUP，3 秒后 SIGKILL）；需要长期持久会话的话，可用 `command` 目标套一层 `tmux new -A -s 名字`
 - 补全候选列表显示在终端里，不是输入框下方的弹出菜单
-- 输入框历史（↑↓）是 porthole 自己记录的，和 zsh 的 history 分开
+- 输入框历史（↑↓）是 InfiTerm 自己记录的，和 zsh 的 history 分开

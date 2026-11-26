@@ -1,4 +1,4 @@
-module porthole
+module github.com/Infinity4B/InfiTerm
 
 go 1.27.3
 

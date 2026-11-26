@@ -25,7 +25,7 @@ const fontOptions = $('#font-options');
 
 const HISTORY_MAX = 1000;
 const REATTACH_MAX = 6;
-const SESSIONS_KEY = 'porthole:sessions';
+const SESSIONS_KEY = 'infiterm:sessions';
 const TAB_ID = typeof crypto?.randomUUID === 'function' ? crypto.randomUUID() : String(Math.random()).slice(2);
 const SECRET_RE = /(password|passphrase|密码|口令|verification code|otp)[^\n]{0,160}[:：]\s*$/i;
 const KIND_LABEL = { local: 'local', ssh: 'ssh', command: 'cmd' };
@@ -57,7 +57,7 @@ const THEMES = {
 
 /* ---------- 设置 ---------- */
 
-const SETTINGS_KEY = 'porthole:settings';
+const SETTINGS_KEY = 'infiterm:settings';
 const DEFAULT_SETTINGS = {
   fontFamily: 'Maple Mono NF CN',
   language: 'auto',
@@ -90,14 +90,6 @@ const APPEARANCE_ICONS = {
 const FONT_FALLBACK = '"Symbols Nerd Font Mono", "MesloLGS NF", Menlo, "PingFang SC", monospace';
 const fontStack = (family) => `"${(family || DEFAULT_SETTINGS.fontFamily).replace(/["\\]/g, '')}", ${FONT_FALLBACK}`;
 const darkQuery = matchMedia('(prefers-color-scheme: dark)');
-
-// 旧名字 ext-term 时期存在浏览器里的设置和历史，搬到新前缀下
-for (const key of Object.keys(localStorage)) {
-  if (!key.startsWith('ext-term:')) continue;
-  const next = 'porthole:' + key.slice('ext-term:'.length);
-  if (localStorage.getItem(next) === null) localStorage.setItem(next, localStorage.getItem(key));
-  localStorage.removeItem(key);
-}
 
 let settings = loadSettings();
 
@@ -171,7 +163,7 @@ function localizeTargets() {
   renderTargetList($('#home-list'), '', -1, (tg) => openPane(tg.id));
   if (picker.open) refreshPicker();
   updateComposer();
-  if (state.active) document.title = `${state.active.target.name} · Porthole`;
+  if (state.active) document.title = `${state.active.target.name} · InfiTerm`;
 }
 
 function fillSettingsForm() {
@@ -407,7 +399,7 @@ function updateKeepAliveLock() {
       release = r;
     });
     keepAliveRelease = release;
-    navigator.locks.request(`porthole:keepalive:${TAB_ID}`, () => held).catch(() => {});
+    navigator.locks.request(`infiterm:keepalive:${TAB_ID}`, () => held).catch(() => {});
   } else if (!need && keepAliveRelease) {
     const release = keepAliveRelease;
     keepAliveRelease = null;
@@ -708,7 +700,7 @@ class Pane {
     }
   }
 
-  // 来自 shell/zsh/porthole.zsh 的 OSC 7777
+  // 来自 shell/zsh/infiterm.zsh 的 OSC 7777
   onShellMessage(data) {
     const [kind, gen, cursor, buffer = '', hint = ''] = data.split(';');
     const sh = this.shell;
@@ -810,7 +802,7 @@ function activate(pane, { focus = true } = {}) {
   renderTabs();
   updateComposer();
   requestAnimationFrame(() => pane.fit());
-  document.title = `${pane.target.name} · Porthole`;
+  document.title = `${pane.target.name} · InfiTerm`;
   if (focus) syncFocusWithBuffer();
   syncUrl();
 }
@@ -849,7 +841,7 @@ function renderTabs() {
     }),
   );
   document.body.classList.toggle('empty', state.panes.length === 0);
-  if (!state.panes.length) document.title = 'Porthole';
+  if (!state.panes.length) document.title = 'InfiTerm';
 }
 
 function syncUrl() {
@@ -1017,7 +1009,7 @@ function acceptGhost() {
 
 /* ---------- 历史 ---------- */
 
-const histKey = (id) => `porthole:hist:${id}`;
+const histKey = (id) => `infiterm:hist:${id}`;
 
 function readHistory(id) {
   try {

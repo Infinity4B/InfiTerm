@@ -46,7 +46,7 @@ func homeDir() string {
 }
 
 func targetsFile() string {
-	return filepath.Join(homeDir(), ".config", "porthole", "targets.json")
+	return filepath.Join(homeDir(), ".config", "infiterm", "targets.json")
 }
 
 func expandHome(p string) string {
@@ -254,7 +254,7 @@ func spawnSpec(t Target) SpawnSpec {
 			if userZdotdir == "" {
 				userZdotdir = homeDir()
 			}
-			spec.Env = []string{"PORTHOLE_USER_ZDOTDIR=" + userZdotdir, "ZDOTDIR=" + zshDir}
+			spec.Env = []string{"INFITERM_USER_ZDOTDIR=" + userZdotdir, "ZDOTDIR=" + zshDir}
 		}
 		return spec
 	}

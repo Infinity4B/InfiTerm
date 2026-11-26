@@ -43,7 +43,7 @@ func serve(host string, port int) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("porthole 已启动: http://localhost:%d", port)
+	log.Printf("InfiTerm 已启动: http://localhost:%d", port)
 	return http.Serve(ln, guard(mux))
 }
 

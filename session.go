@@ -250,7 +250,7 @@ func startPTYSession(target Target, cols, rows uint16) (*ptySession, error) {
 	cmd := exec.Command(spec.File, spec.Args...)
 	cmd.Dir = spec.Cwd
 	cmd.Env = append(os.Environ(), spec.Env...)
-	cmd.Env = append(cmd.Env, "TERM=xterm-256color", "COLORTERM=truecolor", "TERM_PROGRAM=porthole")
+	cmd.Env = append(cmd.Env, "TERM=xterm-256color", "COLORTERM=truecolor", "TERM_PROGRAM=infiterm")
 	if os.Getenv("LANG") == "" {
 		cmd.Env = append(cmd.Env, "LANG=en_US.UTF-8")
 	}
