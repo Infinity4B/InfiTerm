@@ -83,7 +83,7 @@ button { font: inherit; color: inherit; }
 .tab .close:hover { opacity: 1; background: var(--border); }
 .dot { width: .5em; height: .5em; border-radius: 50%; background: var(--muted); flex: none; }
 .dot[data-state="open"] { background: var(--ok); }
-.dot[data-state="connecting"] { background: var(--warn); }
+.dot[data-state="connecting"], .dot[data-state="reconnecting"] { background: var(--warn); }
 .dot[data-state="closed"] { background: var(--danger); }
 
 .spacer { flex: 1; }
