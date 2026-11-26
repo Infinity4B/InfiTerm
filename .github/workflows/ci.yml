@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go Vet, Test & Build (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Files not formatted with gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test with race detector
+        run: go test -v -race ./...
+
+      - name: Build macOS binaries (arm64 & amd64)
+        run: |
+          GOOS=darwin GOARCH=arm64 go build -o bin/infiterm-darwin-arm64 .
+          GOOS=darwin GOARCH=amd64 go build -o bin/infiterm-darwin-amd64 .
+
+      - name: Check zsh integration syntax
+        run: |
+          zsh -n shell/zsh/infiterm.zsh
+          zsh -n shell/zsh/.zshenv
+          zsh -n shell/zsh/.zprofile
+          zsh -n shell/zsh/.zshrc
+          zsh -n shell/zsh/.zlogin
+
+  web:
+    name: Frontend Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check JavaScript syntax
+        run: |
+          node --check web/app.js
+          node --check web/i18n.js

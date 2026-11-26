@@ -24,6 +24,9 @@ const fontInput = $('#font-input');
 const fontOptions = $('#font-options');
 
 const HISTORY_MAX = 1000;
+const REATTACH_MAX = 6;
+const SESSIONS_KEY = 'infiterm:sessions';
+const TAB_ID = typeof crypto?.randomUUID === 'function' ? crypto.randomUUID() : String(Math.random()).slice(2);
 const SECRET_RE = /(password|passphrase|密码|口令|verification code|otp)[^\n]{0,160}[:：]\s*$/i;
 const KIND_LABEL = { local: 'local', ssh: 'ssh', command: 'cmd' };
 
@@ -54,7 +57,7 @@ const THEMES = {
 
 /* ---------- 设置 ---------- */
 
-const SETTINGS_KEY = 'porthole:settings';
+const SETTINGS_KEY = 'infiterm:settings';
 const DEFAULT_SETTINGS = {
   fontFamily: 'Maple Mono NF CN',
   language: 'auto',
@@ -87,14 +90,6 @@ const APPEARANCE_ICONS = {
 const FONT_FALLBACK = '"Symbols Nerd Font Mono", "MesloLGS NF", Menlo, "PingFang SC", monospace';
 const fontStack = (family) => `"${(family || DEFAULT_SETTINGS.fontFamily).replace(/["\\]/g, '')}", ${FONT_FALLBACK}`;
 const darkQuery = matchMedia('(prefers-color-scheme: dark)');
-
-// 旧名字 ext-term 时期存在浏览器里的设置和历史，搬到新前缀下
-for (const key of Object.keys(localStorage)) {
-  if (!key.startsWith('ext-term:')) continue;
-  const next = 'porthole:' + key.slice('ext-term:'.length);
-  if (localStorage.getItem(next) === null) localStorage.setItem(next, localStorage.getItem(key));
-  localStorage.removeItem(key);
-}
 
 let settings = loadSettings();
 
@@ -168,7 +163,7 @@ function localizeTargets() {
   renderTargetList($('#home-list'), '', -1, (tg) => openPane(tg.id));
   if (picker.open) refreshPicker();
   updateComposer();
-  if (state.active) document.title = `${state.active.target.name} · Porthole`;
+  if (state.active) document.title = `${state.active.target.name} · InfiTerm`;
 }
 
 function fillSettingsForm() {
@@ -392,8 +387,55 @@ function newShellState() {
   return { ready: false, gen: 0, buffer: '', cursor: 0, ghost: '' };
 }
 
+let keepAliveRelease = null;
+
+// 有活跃终端时持有当前标签页专属的 Web Lock，避免 Chromium FreezingPolicy 在切到其他标签页后冻结本页断开 WebSocket
+function updateKeepAliveLock() {
+  const need = state.panes.some((p) => p.state === 'open' || p.state === 'connecting' || p.state === 'reconnecting');
+  if (need && !keepAliveRelease) {
+    if (!navigator.locks?.request) return;
+    let release;
+    const held = new Promise((r) => {
+      release = r;
+    });
+    keepAliveRelease = release;
+    navigator.locks.request(`infiterm:keepalive:${TAB_ID}`, () => held).catch(() => {});
+  } else if (!need && keepAliveRelease) {
+    const release = keepAliveRelease;
+    keepAliveRelease = null;
+    release();
+  }
+}
+
+function releaseKeepAliveLock() {
+  if (!keepAliveRelease) return;
+  const release = keepAliveRelease;
+  keepAliveRelease = null;
+  release();
+}
+
+function saveTabSessions() {
+  try {
+    const list = state.panes.map((p) => ({ target: p.target.id, session: p.sessionId || null }));
+    if (list.some((x) => x.session)) sessionStorage.setItem(SESSIONS_KEY, JSON.stringify(list));
+    else sessionStorage.removeItem(SESSIONS_KEY);
+  } catch {}
+}
+
+function loadTabSessions() {
+  // 仅在浏览器 Memory Saver 丢弃重载或页面刷新时恢复 sessionStorage 中的会话，避免复制标签页时抢占原标签页的会话
+  const nav = performance.getEntriesByType?.('navigation')?.[0];
+  if (!document.wasDiscarded && nav?.type !== 'reload') return [];
+  try {
+    const list = JSON.parse(sessionStorage.getItem(SESSIONS_KEY));
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
 class Pane {
-  constructor(target) {
+  constructor(target, { sessionId = null } = {}) {
     this.id = ++paneSeq;
     this.target = target;
     this.state = 'connecting';
@@ -401,6 +443,12 @@ class Pane {
     this.autoReturn = false;
     this.pending = [];
     this.ws = null;
+    this.sessionId = sessionId;
+    this.rxBytes = 0;
+    this.disposed = false;
+    this.reattachAttempt = 0;
+    this.reattachTimer = null;
+    this.probeTimer = null;
     this.draft = '';
     this.shell = newShellState();
 
@@ -460,56 +508,169 @@ class Pane {
     } catch {}
   }
 
-  connect() {
-    this.setState('connecting');
-    this.shell = newShellState();
+  connect({ reattach = false, fallbackNew = false } = {}) {
+    if (this.disposed) return;
+    this.clearTimers();
+    if (!reattach || !this.sessionId) {
+      reattach = false;
+      this.sessionId = null;
+      this.rxBytes = 0;
+      this.shell = newShellState();
+      this.setState('connecting');
+    } else {
+      this.setState('reconnecting');
+    }
     // 先确定尺寸再启动 pty，否则 shell 按 80 列输出的提示符会错位；隐藏的标签沿用当前标签的尺寸
     this.fit();
     const ref = state.active;
     if (!this.el.clientWidth && ref && ref !== this) this.term.resize(ref.term.cols, ref.term.rows);
     const q = new URLSearchParams({ target: this.target.id, cols: this.term.cols, rows: this.term.rows });
-    const ws = new WebSocket(`ws://${location.host}/ws?${q}`);
+    if (reattach) {
+      q.set('session', this.sessionId);
+      q.set('since', String(this.rxBytes));
+    }
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${location.host}/ws?${q}`);
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
     let exited = false;
 
     ws.onmessage = (ev) => {
+      if (this.ws !== ws || this.disposed) return;
+      this.clearProbeTimer();
       if (ev.data instanceof ArrayBuffer) {
+        this.rxBytes += ev.data.byteLength;
         this.term.write(new Uint8Array(ev.data));
         return;
       }
       const msg = JSON.parse(ev.data);
       if (msg.t === 'ready') {
+        this.reattachAttempt = 0;
+        this.sessionId = msg.session || null;
+        if (typeof msg.offset === 'number') this.rxBytes = msg.offset;
+        if (!msg.reattached) this.shell = newShellState();
+        saveTabSessions();
         this.setState('open');
         this.sendControl({ t: 'resize', cols: this.term.cols, rows: this.term.rows });
         for (const d of this.pending.splice(0)) this.send(d);
+      } else if (msg.t === 'pong') {
+        // 活性探测响应，已清除 probeTimer
       } else if (msg.t === 'exit') {
         exited = true;
+        this.sessionId = null;
+        saveTabSessions();
         this.term.write(`\r\n\x1b[90m${t('term.exited', { code: msg.code })}\x1b[0m\r\n`);
       } else if (msg.t === 'error') {
+        if (msg.code === 'session_expired') {
+          this.sessionId = null;
+          saveTabSessions();
+          if (fallbackNew) {
+            this.ws = null;
+            ws.close();
+            this.connect({ reattach: false });
+          }
+          return;
+        }
         exited = true;
+        this.sessionId = null;
+        saveTabSessions();
         const key = { unknown_target: 'term.unknownTarget', spawn_failed: 'term.spawnFailed' }[msg.code];
         this.term.write(`\r\n\x1b[31m${key ? t(key, { detail: msg.detail }) : msg.message || msg.code}\x1b[0m\r\n`);
       }
     };
     ws.onclose = () => {
-      if (this.ws !== ws) return;
-      if (!exited) this.term.write(`\r\n\x1b[90m${t('term.disconnected')}\x1b[0m\r\n`);
-      this.secret = false;
-      this.shell = newShellState();
-      this.setState('closed');
-      if (this === state.active) renderGhost();
+      if (this.ws !== ws || this.disposed) return;
+      this.clearProbeTimer();
+      this.ws = null;
+      if (!exited && this.sessionId) {
+        this.scheduleReattach();
+        return;
+      }
+      this.markClosed(!exited);
     };
+  }
+
+  markClosed(showDisconnected) {
+    this.clearTimers();
+    this.sessionId = null;
+    saveTabSessions();
+    if (showDisconnected) this.term.write(`\r\n\x1b[90m${t('term.disconnected')}\x1b[0m\r\n`);
+    this.secret = false;
+    this.shell = newShellState();
+    this.setState('closed');
+    if (this === state.active) renderGhost();
+  }
+
+  clearProbeTimer() {
+    if (this.probeTimer) {
+      clearTimeout(this.probeTimer);
+      this.probeTimer = null;
+    }
+  }
+
+  clearTimers() {
+    this.clearProbeTimer();
+    if (this.reattachTimer) {
+      clearTimeout(this.reattachTimer);
+      this.reattachTimer = null;
+    }
+  }
+
+  scheduleReattach() {
+    if (this.disposed || !this.sessionId) return;
+    this.clearTimers();
+    this.setState('reconnecting');
+    // 标签页在后台时不消耗重试次数，等切回前台或唤醒时立即重连
+    if (document.hidden) return;
+    if (this.reattachAttempt >= REATTACH_MAX) {
+      this.markClosed(true);
+      return;
+    }
+    const delay = Math.min(8000, 300 * 2 ** this.reattachAttempt);
+    this.reattachAttempt++;
+    this.reattachTimer = setTimeout(() => {
+      this.reattachTimer = null;
+      this.connect({ reattach: true });
+    }, delay);
+  }
+
+  reattachNow() {
+    if (this.disposed || !this.sessionId) return;
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
+    this.reattachAttempt = 0;
+    this.connect({ reattach: true });
+  }
+
+  // 切回标签页或从休眠恢复时探测连接是否半开；若 3 秒内无响应则主动断开并触发无感重连
+  probeConnection() {
+    if (this.disposed) return;
+    if (this.state === 'reconnecting') {
+      this.reattachNow();
+      return;
+    }
+    if (this.state !== 'open') return;
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      this.reattachNow();
+      return;
+    }
+    this.clearProbeTimer();
+    this.sendControl({ t: 'ping' });
+    this.probeTimer = setTimeout(() => {
+      this.probeTimer = null;
+      if (this.ws === ws && !this.disposed) ws.close();
+    }, 3000);
   }
 
   reconnect() {
     this.term.write(`\r\n\x1b[90m${t('term.reconnecting')}\x1b[0m\r\n`);
-    this.connect();
+    this.connect({ reattach: false });
   }
 
   setState(s) {
     this.state = s;
     renderTabs();
+    updateKeepAliveLock();
     if (this === state.active) updateComposer();
   }
 
@@ -518,8 +679,9 @@ class Pane {
     if (this.state === 'closed') {
       this.pending.push(d);
       this.reconnect();
-    } else if (this.state === 'connecting') {
+    } else if (this.state === 'connecting' || this.state === 'reconnecting') {
       this.pending.push(d);
+      if (this.state === 'reconnecting') this.reattachNow();
     } else {
       this.sendControl({ t: 'in', d });
     }
@@ -538,7 +700,7 @@ class Pane {
     }
   }
 
-  // 来自 shell/zsh/porthole.zsh 的 OSC 7777
+  // 来自 shell/zsh/infiterm.zsh 的 OSC 7777
   onShellMessage(data) {
     const [kind, gen, cursor, buffer = '', hint = ''] = data.split(';');
     const sh = this.shell;
@@ -584,10 +746,18 @@ class Pane {
   }
 
   dispose() {
+    this.disposed = true;
+    this.clearTimers();
     this.resizeObserver.disconnect();
     const ws = this.ws;
     this.ws = null;
+    if (ws?.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify({ t: 'close' }));
+      } catch {}
+    }
     ws?.close();
+    this.sessionId = null;
     this.term.dispose();
     this.el.remove();
   }
@@ -595,13 +765,13 @@ class Pane {
 
 /* ---------- 标签 ---------- */
 
-function openPane(targetId, { activateIt = true } = {}) {
-  const pane = new Pane(targetById(targetId));
+function openPane(targetId, { activateIt = true, sessionId = null } = {}) {
+  const pane = new Pane(targetById(targetId), { sessionId });
   state.panes.push(pane);
   if (activateIt || !state.active) activate(pane);
   else renderTabs();
   syncUrl();
-  pane.connect();
+  pane.connect({ reattach: !!sessionId, fallbackNew: !!sessionId });
   return pane;
 }
 
@@ -616,6 +786,8 @@ function closePane(pane) {
     if (next) activate(next);
   }
   renderTabs();
+  saveTabSessions();
+  updateKeepAliveLock();
   syncUrl();
 }
 
@@ -630,7 +802,7 @@ function activate(pane, { focus = true } = {}) {
   renderTabs();
   updateComposer();
   requestAnimationFrame(() => pane.fit());
-  document.title = `${pane.target.name} · Porthole`;
+  document.title = `${pane.target.name} · InfiTerm`;
   if (focus) syncFocusWithBuffer();
   syncUrl();
 }
@@ -669,7 +841,7 @@ function renderTabs() {
     }),
   );
   document.body.classList.toggle('empty', state.panes.length === 0);
-  if (!state.panes.length) document.title = 'Porthole';
+  if (!state.panes.length) document.title = 'InfiTerm';
 }
 
 function syncUrl() {
@@ -733,6 +905,7 @@ function updateComposer() {
   let warn = false;
   if (p.state === 'closed') mode = t('mode.closed');
   else if (p.state === 'connecting') mode = t('mode.connecting');
+  else if (p.state === 'reconnecting') mode = t('mode.reconnecting');
   else if (p.altScreen) mode = t('mode.altScreen');
   else if (p.secret) {
     mode = t('mode.secret');
@@ -836,7 +1009,7 @@ function acceptGhost() {
 
 /* ---------- 历史 ---------- */
 
-const histKey = (id) => `porthole:hist:${id}`;
+const histKey = (id) => `infiterm:hist:${id}`;
 
 function readHistory(id) {
   try {
@@ -1183,8 +1356,24 @@ $('#btn-new').addEventListener('click', openPicker);
 $('#btn-settings').addEventListener('click', openSettings);
 btnComposer.addEventListener('click', () => setComposerOpen(!state.composerOpen));
 
+function recoverPanes() {
+  updateKeepAliveLock();
+  for (const p of state.panes) p.probeConnection();
+  state.active?.fit();
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) recoverPanes();
+});
+document.addEventListener('resume', recoverPanes);
+window.addEventListener('online', recoverPanes);
+window.addEventListener('pagehide', releaseKeepAliveLock);
+window.addEventListener('pageshow', (e) => {
+  if (e.persisted) recoverPanes();
+});
+
 window.addEventListener('beforeunload', (e) => {
-  if (state.panes.some((p) => p.state === 'open')) e.preventDefault();
+  if (state.panes.some((p) => p.state === 'open' || p.state === 'reconnecting')) e.preventDefault();
 });
 
 /* ---------- 启动 ---------- */
@@ -1200,9 +1389,13 @@ async function init() {
   }
   localizeTargets();
 
+  const saved = loadTabSessions();
   const params = new URLSearchParams(location.search);
   const ids = params.getAll('t').flatMap((s) => s.split(',')).map((s) => s.trim()).filter(Boolean);
-  ids.forEach((id, i) => openPane(id, { activateIt: i === 0 }));
+  ids.forEach((id, i) => {
+    const sessionId = saved[i]?.target === id ? saved[i].session : null;
+    openPane(id, { activateIt: i === 0, sessionId });
+  });
   renderTabs();
   if (state.panes[0]) activate(state.panes[0]);
 }

@@ -1,13 +1,16 @@
-BIN := $(HOME)/.local/bin/porthole
+BIN := $(HOME)/.local/bin/infiterm
 PORT ?= 7681
 
-.PHONY: build run install uninstall
+.PHONY: build run test install uninstall
 
 build:
-	go build -o bin/porthole .
+	go build -o bin/infiterm .
 
 run: build
-	./bin/porthole -port $(PORT)
+	./bin/infiterm -port $(PORT)
+
+test:
+	go test -v -race ./...
 
 # 编译到 ~/.local/bin 并注册 launchd：登录后自动启动；改代码后再执行一次即可更新并重启
 install:
