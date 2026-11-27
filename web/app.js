@@ -3,7 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { t, setLanguage, resolveLanguage, translatePage } from './i18n.js';
-import { hostFromTitle, isSSHCommand } from './tab-title.js';
+import { sshHostFromCommand, isSSHCommand } from './tab-title.js';
 
 const $ = (s) => document.querySelector(s);
 const tabsEl = $('#tabs');
@@ -484,13 +484,6 @@ class Pane {
     this.term.onWriteParsed(() => this.detectSecretPrompt());
     this.term.onTitleChange((title) => {
       this.title = title;
-      if (this.sshActive && this.target.kind === 'local') {
-        const host = hostFromTitle(title);
-        if (host && host !== this.remoteHost) {
-          this.remoteHost = host;
-          if (this === state.active) document.title = `${this.label} · InfiTerm`;
-        }
-      }
       renderTabs();
     });
     this.term.buffer.onBufferChange(() => {
@@ -729,6 +722,11 @@ class Pane {
       if (active && input.value) shellSync(this);
     } else if (kind === 'busy') {
       this.sshActive = this.target.kind === 'local' && isSSHCommand(sh.buffer);
+      if (this.sshActive) {
+        this.remoteHost = sshHostFromCommand(sh.buffer);
+        renderTabs();
+        if (this === state.active) document.title = `${this.label} · InfiTerm`;
+      }
       sh.ready = false;
       sh.ghost = '';
       // shell 接受了这一行（回车执行或 Ctrl+C），输入框随之清空
