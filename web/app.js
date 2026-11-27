@@ -3,6 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { t, setLanguage, resolveLanguage, translatePage } from './i18n.js';
+import { hostFromTitle, isSSHCommand } from './tab-title.js';
 
 const $ = (s) => document.querySelector(s);
 const tabsEl = $('#tabs');
@@ -163,7 +164,7 @@ function localizeTargets() {
   renderTargetList($('#home-list'), '', -1, (tg) => openPane(tg.id));
   if (picker.open) refreshPicker();
   updateComposer();
-  if (state.active) document.title = `${state.active.target.name} · InfiTerm`;
+  if (state.active) document.title = `${state.active.label} · InfiTerm`;
 }
 
 function fillSettingsForm() {
@@ -451,6 +452,8 @@ class Pane {
     this.probeTimer = null;
     this.draft = '';
     this.shell = newShellState();
+    this.sshActive = false;
+    this.remoteHost = '';
 
     this.el = document.createElement('div');
     this.el.className = 'pane';
@@ -481,6 +484,13 @@ class Pane {
     this.term.onWriteParsed(() => this.detectSecretPrompt());
     this.term.onTitleChange((title) => {
       this.title = title;
+      if (this.sshActive && this.target.kind === 'local') {
+        const host = hostFromTitle(title);
+        if (host && host !== this.remoteHost) {
+          this.remoteHost = host;
+          if (this === state.active) document.title = `${this.label} · InfiTerm`;
+        }
+      }
       renderTabs();
     });
     this.term.buffer.onBufferChange(() => {
@@ -516,6 +526,8 @@ class Pane {
       this.sessionId = null;
       this.rxBytes = 0;
       this.shell = newShellState();
+      this.sshActive = false;
+      this.remoteHost = '';
       this.setState('connecting');
     } else {
       this.setState('reconnecting');
@@ -558,6 +570,7 @@ class Pane {
       } else if (msg.t === 'exit') {
         exited = true;
         this.sessionId = null;
+        this.clearRemoteHost();
         saveTabSessions();
         this.term.write(`\r\n\x1b[90m${t('term.exited', { code: msg.code })}\x1b[0m\r\n`);
       } else if (msg.t === 'error') {
@@ -597,6 +610,7 @@ class Pane {
     if (showDisconnected) this.term.write(`\r\n\x1b[90m${t('term.disconnected')}\x1b[0m\r\n`);
     this.secret = false;
     this.shell = newShellState();
+    this.clearRemoteHost();
     this.setState('closed');
     if (this === state.active) renderGhost();
   }
@@ -706,6 +720,7 @@ class Pane {
     const sh = this.shell;
     const active = this === state.active;
     if (kind === 'ready') {
+      this.clearRemoteHost();
       sh.ready = true;
       sh.buffer = '';
       sh.cursor = 0;
@@ -713,6 +728,7 @@ class Pane {
       // 命令运行期间在输入框里提前敲好的内容，回到提示符后同步给 shell
       if (active && input.value) shellSync(this);
     } else if (kind === 'busy') {
+      this.sshActive = this.target.kind === 'local' && isSSHCommand(sh.buffer);
       sh.ready = false;
       sh.ghost = '';
       // shell 接受了这一行（回车执行或 Ctrl+C），输入框随之清空
@@ -729,6 +745,18 @@ class Pane {
       else this.draft = sh.buffer;
     }
     if (active) updateComposer();
+  }
+
+  get label() {
+    return this.remoteHost || this.target.name;
+  }
+
+  clearRemoteHost() {
+    this.sshActive = false;
+    if (!this.remoteHost) return;
+    this.remoteHost = '';
+    renderTabs();
+    if (this === state.active) document.title = `${this.label} · InfiTerm`;
   }
 
   detectSecretPrompt() {
@@ -802,7 +830,7 @@ function activate(pane, { focus = true } = {}) {
   renderTabs();
   updateComposer();
   requestAnimationFrame(() => pane.fit());
-  document.title = `${pane.target.name} · InfiTerm`;
+  document.title = `${pane.label} · InfiTerm`;
   if (focus) syncFocusWithBuffer();
   syncUrl();
 }
@@ -823,7 +851,7 @@ function renderTabs() {
       idx.textContent = i < 9 ? String(i + 1) : '';
       const label = document.createElement('span');
       label.className = 'label';
-      label.textContent = p.target.name;
+      label.textContent = p.label;
       const close = document.createElement('button');
       close.className = 'close';
       close.textContent = '×';
