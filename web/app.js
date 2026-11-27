@@ -1183,9 +1183,13 @@ function openPicker() {
   if (picker.open) return;
   pickerFilter.value = '';
   pickerIndex = 0;
+  // Show the current snapshot immediately, then refresh it in the background.
+  // This keeps the picker responsive while ensuring edits to ssh/config and
+  // targets.json are visible each time it is opened.
   refreshPicker();
   picker.showModal();
   pickerFilter.focus();
+  void loadTargets();
 }
 
 pickerFilter.addEventListener('input', () => {
@@ -1378,16 +1382,21 @@ window.addEventListener('beforeunload', (e) => {
 
 /* ---------- 启动 ---------- */
 
-async function init() {
-  applySettings();
-  setComposerOpen(settings.showComposer, { focus: false });
+async function loadTargets() {
   try {
     const res = await fetch('/api/targets');
+    if (!res.ok) throw new Error(`failed to load targets: ${res.status}`);
     state.targets = await res.json();
   } catch {
     state.targets = [];
   }
   localizeTargets();
+}
+
+async function init() {
+  applySettings();
+  setComposerOpen(settings.showComposer, { focus: false });
+  await loadTargets();
 
   const saved = loadTabSessions();
   const params = new URLSearchParams(location.search);
