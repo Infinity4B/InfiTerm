@@ -64,3 +64,4 @@ jobs:
         run: |
           node --check web/app.js
           node --check web/i18n.js
+          node --test web/tab-title.test.js

@@ -3,6 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { t, setLanguage, resolveLanguage, translatePage } from './i18n.js';
+import { sshHostFromCommand, isSSHCommand } from './tab-title.js';
 
 const $ = (s) => document.querySelector(s);
 const tabsEl = $('#tabs');
@@ -163,7 +164,7 @@ function localizeTargets() {
   renderTargetList($('#home-list'), '', -1, (tg) => openPane(tg.id));
   if (picker.open) refreshPicker();
   updateComposer();
-  if (state.active) document.title = `${state.active.target.name} · InfiTerm`;
+  if (state.active) document.title = `${state.active.label} · InfiTerm`;
 }
 
 function fillSettingsForm() {
@@ -416,7 +417,11 @@ function releaseKeepAliveLock() {
 
 function saveTabSessions() {
   try {
-    const list = state.panes.map((p) => ({ target: p.target.id, session: p.sessionId || null }));
+    const list = state.panes.map((p) => ({
+      target: p.target.id,
+      session: p.sessionId || null,
+      remoteHost: p.remoteHost || null,
+    }));
     if (list.some((x) => x.session)) sessionStorage.setItem(SESSIONS_KEY, JSON.stringify(list));
     else sessionStorage.removeItem(SESSIONS_KEY);
   } catch {}
@@ -435,7 +440,7 @@ function loadTabSessions() {
 }
 
 class Pane {
-  constructor(target, { sessionId = null } = {}) {
+  constructor(target, { sessionId = null, remoteHost = '' } = {}) {
     this.id = ++paneSeq;
     this.target = target;
     this.state = 'connecting';
@@ -451,6 +456,8 @@ class Pane {
     this.probeTimer = null;
     this.draft = '';
     this.shell = newShellState();
+    this.sshActive = false;
+    this.remoteHost = sessionId ? remoteHost : '';
 
     this.el = document.createElement('div');
     this.el.className = 'pane';
@@ -516,6 +523,8 @@ class Pane {
       this.sessionId = null;
       this.rxBytes = 0;
       this.shell = newShellState();
+      this.sshActive = false;
+      this.remoteHost = '';
       this.setState('connecting');
     } else {
       this.setState('reconnecting');
@@ -548,7 +557,10 @@ class Pane {
         this.reattachAttempt = 0;
         this.sessionId = msg.session || null;
         if (typeof msg.offset === 'number') this.rxBytes = msg.offset;
-        if (!msg.reattached) this.shell = newShellState();
+        if (!msg.reattached) {
+          this.shell = newShellState();
+          this.clearRemoteHost();
+        }
         saveTabSessions();
         this.setState('open');
         this.sendControl({ t: 'resize', cols: this.term.cols, rows: this.term.rows });
@@ -558,6 +570,7 @@ class Pane {
       } else if (msg.t === 'exit') {
         exited = true;
         this.sessionId = null;
+        this.clearRemoteHost();
         saveTabSessions();
         this.term.write(`\r\n\x1b[90m${t('term.exited', { code: msg.code })}\x1b[0m\r\n`);
       } else if (msg.t === 'error') {
@@ -593,10 +606,11 @@ class Pane {
   markClosed(showDisconnected) {
     this.clearTimers();
     this.sessionId = null;
-    saveTabSessions();
     if (showDisconnected) this.term.write(`\r\n\x1b[90m${t('term.disconnected')}\x1b[0m\r\n`);
     this.secret = false;
     this.shell = newShellState();
+    this.clearRemoteHost();
+    saveTabSessions();
     this.setState('closed');
     if (this === state.active) renderGhost();
   }
@@ -706,6 +720,8 @@ class Pane {
     const sh = this.shell;
     const active = this === state.active;
     if (kind === 'ready') {
+      this.clearRemoteHost();
+      saveTabSessions();
       sh.ready = true;
       sh.buffer = '';
       sh.cursor = 0;
@@ -713,6 +729,13 @@ class Pane {
       // 命令运行期间在输入框里提前敲好的内容，回到提示符后同步给 shell
       if (active && input.value) shellSync(this);
     } else if (kind === 'busy') {
+      this.sshActive = this.target.kind === 'local' && isSSHCommand(sh.buffer);
+      if (this.sshActive) {
+        this.remoteHost = sshHostFromCommand(sh.buffer);
+        renderTabs();
+        if (this === state.active) document.title = `${this.label} · InfiTerm`;
+        saveTabSessions();
+      }
       sh.ready = false;
       sh.ghost = '';
       // shell 接受了这一行（回车执行或 Ctrl+C），输入框随之清空
@@ -729,6 +752,18 @@ class Pane {
       else this.draft = sh.buffer;
     }
     if (active) updateComposer();
+  }
+
+  get label() {
+    return this.remoteHost || this.target.name;
+  }
+
+  clearRemoteHost() {
+    this.sshActive = false;
+    if (!this.remoteHost) return;
+    this.remoteHost = '';
+    renderTabs();
+    if (this === state.active) document.title = `${this.label} · InfiTerm`;
   }
 
   detectSecretPrompt() {
@@ -765,8 +800,8 @@ class Pane {
 
 /* ---------- 标签 ---------- */
 
-function openPane(targetId, { activateIt = true, sessionId = null } = {}) {
-  const pane = new Pane(targetById(targetId), { sessionId });
+function openPane(targetId, { activateIt = true, sessionId = null, remoteHost = '' } = {}) {
+  const pane = new Pane(targetById(targetId), { sessionId, remoteHost });
   state.panes.push(pane);
   if (activateIt || !state.active) activate(pane);
   else renderTabs();
@@ -802,7 +837,7 @@ function activate(pane, { focus = true } = {}) {
   renderTabs();
   updateComposer();
   requestAnimationFrame(() => pane.fit());
-  document.title = `${pane.target.name} · InfiTerm`;
+  document.title = `${pane.label} · InfiTerm`;
   if (focus) syncFocusWithBuffer();
   syncUrl();
 }
@@ -823,7 +858,7 @@ function renderTabs() {
       idx.textContent = i < 9 ? String(i + 1) : '';
       const label = document.createElement('span');
       label.className = 'label';
-      label.textContent = p.target.name;
+      label.textContent = p.label;
       const close = document.createElement('button');
       close.className = 'close';
       close.textContent = '×';
@@ -1403,7 +1438,8 @@ async function init() {
   const ids = params.getAll('t').flatMap((s) => s.split(',')).map((s) => s.trim()).filter(Boolean);
   ids.forEach((id, i) => {
     const sessionId = saved[i]?.target === id ? saved[i].session : null;
-    openPane(id, { activateIt: i === 0, sessionId });
+    const remoteHost = sessionId && saved[i]?.target === id ? saved[i].remoteHost || '' : '';
+    openPane(id, { activateIt: i === 0, sessionId, remoteHost });
   });
   renderTabs();
   if (state.panes[0]) activate(state.panes[0]);
